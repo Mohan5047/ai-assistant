@@ -1,0 +1,106 @@
+services:
+  # ==========================================
+  # Database: PostgreSQL 16
+  # ==========================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: assistant-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-assistant_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-assistant_secret_password}
+      POSTGRES_DB: ${POSTGRES_DB:-assistant_db}
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-assistant_user} -d ${POSTGRES_DB:-assistant_db}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ==========================================
+  # In-Memory Cache & Queue: Redis 7
+  # ==========================================
+  redis:
+    image: redis:7-alpine
+    container_name: assistant-redis
+    restart: always
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ==========================================
+  # Backend API Server: Node.js Express
+  # ==========================================
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    container_name: assistant-api
+    restart: always
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: postgresql://${POSTGRES_USER:-assistant_user}:${POSTGRES_PASSWORD:-assistant_secret_password}@postgres:5432/${POSTGRES_DB:-assistant_db}?schema=public
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      JWT_SECRET: ${JWT_SECRET:-production-secure-random-jwt-secret-key-32chars}
+      TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost,http://localhost:5173}
+      APP_URL: ${APP_URL:-http://localhost}
+    ports:
+      - '3000:3000'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ==========================================
+  # Background Worker: BullMQ Queue Worker
+  # ==========================================
+  worker:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    container_name: assistant-worker
+    restart: always
+    command: ["node", "apps/api/dist/worker.js"]
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${POSTGRES_USER:-assistant_user}:${POSTGRES_PASSWORD:-assistant_secret_password}@postgres:5432/${POSTGRES_DB:-assistant_db}?schema=public
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}
+      APP_URL: ${APP_URL:-http://localhost}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ==========================================
+  # Web Frontend: Vite React SPA / Nginx
+  # ==========================================
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    container_name: assistant-web
+    restart: always
+    ports:
+      - '80:80'
+    depends_on:
+      - api
+
+volumes:
+  postgres_data:
+  redis_data:
